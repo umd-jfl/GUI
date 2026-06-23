@@ -58,6 +58,37 @@ maxImagesToLoad = 200;       % Use Inf for all images.
 exportEmptyFrameRows = true; % Export no-box frames as negative rows.
 defaultContactID = "";
 
+%% ================= BOUNDING BOX COLOR SETTINGS =================
+% These settings control the colors used when SAVING annotated images.
+% They do not change the live interactive ROI colors on screen.
+%
+% Supported modes:
+%   "label"     : color boxes by object label
+%   "contactID" : color boxes by persistent ContactID
+%   "source"    : color boxes by detection/edit source
+%   "single"    : use one color for every box
+%
+% Colors are RGB triplets in [R G B] format from 0 to 255.
+boxColorMode = "label";
+defaultBoxColor = [255 255 0];   % yellow fallback
+
+labelColorMap = containers.Map( ...
+    {'boat','ship','submarine','cargo_ship','warship','aircraft_carrier', ...
+     'sailboat','fishing_boat','passenger_ship','airplane','helicopter', ...
+     'bird','buoy','dock','unknown'}, ...
+    {[0 255 255], [255 255 0], [255 0 255], [255 128 0], [255 0 0], [128 0 255], ...
+     [0 255 0], [0 128 255], [128 255 0], [0 0 255], [128 128 255], ...
+     [0 255 128], [255 128 128], [128 128 128], [255 255 255]} ...
+);
+
+sourceColorMap = containers.Map( ...
+    {'pretrained','custom','manual','pretrained_edited','custom_edited','manual_edited','none'}, ...
+    {[255 255 0], [0 255 0], [0 255 255], [255 128 0], [128 255 0], [0 128 255], [255 255 255]} ...
+);
+
+% Used when boxColorMode = "contactID". Same ContactID gets same deterministic color.
+contactIDColorSeed = 37;
+
 %% ================= VALIDATE INPUT =================
 
 if ~isfolder(inputDir)
@@ -653,7 +684,7 @@ loadFrame(currentIndex);
         end
         csvPath = fullfile(outputDir, "reviewed_detections_all.csv");
         writetable(allResults, csvPath);
-        save(fullfile(outputDir, "reviewed_frameData.mat"), "frameData", "knownContactIDs", "detectorMode", "pretrainedDetectorName", "customModelPath", "detectorDescription", "targetClasses", "manualLabels");
+        save(fullfile(outputDir, "reviewed_frameData.mat"), "frameData", "knownContactIDs", "detectorMode", "pretrainedDetectorName", "customModelPath", "detectorDescription", "targetClasses", "manualLabels", "boxColorMode", "defaultBoxColor", "labelColorMap", "sourceColorMap");
         uialert(fig, sprintf("Export complete.\n\nCSV:\n%s", csvPath), "Export Complete");
         fprintf("\nExport complete.\nCSV saved to:\n%s\n", csvPath);
     end
@@ -668,9 +699,8 @@ loadFrame(currentIndex);
         annotatedFile = fullfile(annotatedDir, uniqueBaseName + "_reviewed.png");
         annotated = I;
         T = table();
+
         if ~isempty(boxes)
-            bboxesForAnnotation = zeros(numel(boxes), 4);
-            labelText = strings(numel(boxes), 1);
             for j = 1:numel(boxes)
                 pos = boxes(j).Position;
                 x1 = max(1, round(pos(1)));
@@ -680,10 +710,20 @@ loadFrame(currentIndex);
                 finalW = x2 - x1 + 1;
                 finalH = y2 - y1 + 1;
                 if finalW <= 1 || finalH <= 1; continue; end
+
                 cleanBox = [x1, y1, finalW, finalH];
-                bboxesForAnnotation(j, :) = cleanBox;
-                if isnan(boxes(j).Confidence); confText = "manual"; else; confText = compose("%.2f", boxes(j).Confidence); end
-                labelText(j) = makeExportLabelText(boxes(j), confText);
+
+                if isnan(boxes(j).Confidence)
+                    confText = "manual";
+                else
+                    confText = compose("%.2f", boxes(j).Confidence);
+                end
+
+                labelText = makeExportLabelText(boxes(j), confText);
+                boxColor = getBoxColor(boxes(j));
+
+                annotated = insertObjectAnnotation(annotated, "rectangle", cleanBox, labelText, "Color", uint8(boxColor));
+
                 objectCrop = I(y1:y2, x1:x2, :);
                 [X, Y] = meshgrid(x1:x2, y1:y2);
                 pixelCoords = [X(:), Y(:)];
@@ -691,6 +731,7 @@ loadFrame(currentIndex);
                 cropFile = fullfile(cropDir, uniqueBaseName + "_object_" + j + "_" + safeLabel + ".png");
                 pixelFile = fullfile(pixelDir, uniqueBaseName + "_object_" + j + "_pixels.mat");
                 imwrite(objectCrop, cropFile);
+
                 areaPixels = finalW * finalH;
                 sizeCategory = classifyObjectSize(finalW, finalH);
                 centerX = x1 + finalW / 2;
@@ -699,19 +740,20 @@ loadFrame(currentIndex);
                 normCenterY = centerY / imgH;
                 normWidth   = finalW / imgW;
                 normHeight  = finalH / imgH;
+
                 save(pixelFile, "pixelCoords", "x1", "y1", "x2", "y2", "finalW", "finalH", "areaPixels", "centerX", "centerY", "normCenterX", "normCenterY", "normWidth", "normHeight", "objectCrop");
-                row = table(string(baseName), string(imgPath), idx, string(boxes(j).ObjectID), string(boxes(j).ContactID), string(boxes(j).Label), boxes(j).Confidence, string(boxes(j).Source), string(frameData(idx).frameStatus), logical(frameData(idx).reviewed), x1, y1, x2, y2, finalW, finalH, areaPixels, string(sizeCategory), centerX, centerY, normCenterX, normCenterY, normWidth, normHeight, string(cropFile), string(pixelFile), imgW, imgH, string(annotatedFile), string(detectorDescription), 'VariableNames', {'Frame','FullPath','FrameIndex','ObjectID','ContactID','Label','Confidence','Source','FrameStatus','Reviewed','X1','Y1','X2','Y2','Width','Height','AreaPixels','SizeCategory','CenterX','CenterY','NormCenterX','NormCenterY','NormWidth','NormHeight','CropFile','PixelFile','ImageWidth','ImageHeight','AnnotatedImage','DetectorDescription'});
+
+                row = table(string(baseName), string(imgPath), idx, string(boxes(j).ObjectID), string(boxes(j).ContactID), string(boxes(j).Label), boxes(j).Confidence, string(boxes(j).Source), string(frameData(idx).frameStatus), logical(frameData(idx).reviewed), x1, y1, x2, y2, finalW, finalH, areaPixels, string(sizeCategory), centerX, centerY, normCenterX, normCenterY, normWidth, normHeight, string(cropFile), string(pixelFile), imgW, imgH, string(annotatedFile), string(detectorDescription), string(boxColorMode), double(boxColor(1)), double(boxColor(2)), double(boxColor(3)), 'VariableNames', {'Frame','FullPath','FrameIndex','ObjectID','ContactID','Label','Confidence','Source','FrameStatus','Reviewed','X1','Y1','X2','Y2','Width','Height','AreaPixels','SizeCategory','CenterX','CenterY','NormCenterX','NormCenterY','NormWidth','NormHeight','CropFile','PixelFile','ImageWidth','ImageHeight','AnnotatedImage','DetectorDescription','BoxColorMode','BoxColorR','BoxColorG','BoxColorB'});
                 T = [T; row]; %#ok<AGROW>
             end
-            validRows = bboxesForAnnotation(:,3) > 1 & bboxesForAnnotation(:,4) > 1;
-            if any(validRows)
-                annotated = insertObjectAnnotation(I, "rectangle", bboxesForAnnotation(validRows, :), labelText(validRows));
-            end
         end
+
         imwrite(annotated, annotatedFile);
+
         if isempty(T) && exportEmptyFrameRows
-            T = table(string(baseName), string(imgPath), idx, string(""), string(""), string("none"), NaN, string("none"), string(frameData(idx).frameStatus), logical(frameData(idx).reviewed), NaN, NaN, NaN, NaN, NaN, NaN, NaN, string("none"), NaN, NaN, NaN, NaN, NaN, NaN, string(""), string(""), imgW, imgH, string(annotatedFile), string(detectorDescription), 'VariableNames', {'Frame','FullPath','FrameIndex','ObjectID','ContactID','Label','Confidence','Source','FrameStatus','Reviewed','X1','Y1','X2','Y2','Width','Height','AreaPixels','SizeCategory','CenterX','CenterY','NormCenterX','NormCenterY','NormWidth','NormHeight','CropFile','PixelFile','ImageWidth','ImageHeight','AnnotatedImage','DetectorDescription'});
+            T = table(string(baseName), string(imgPath), idx, string(""), string(""), string("none"), NaN, string("none"), string(frameData(idx).frameStatus), logical(frameData(idx).reviewed), NaN, NaN, NaN, NaN, NaN, NaN, NaN, string("none"), NaN, NaN, NaN, NaN, NaN, NaN, string(""), string(""), imgW, imgH, string(annotatedFile), string(detectorDescription), string(boxColorMode), NaN, NaN, NaN, 'VariableNames', {'Frame','FullPath','FrameIndex','ObjectID','ContactID','Label','Confidence','Source','FrameStatus','Reviewed','X1','Y1','X2','Y2','Width','Height','AreaPixels','SizeCategory','CenterX','CenterY','NormCenterX','NormCenterY','NormWidth','NormHeight','CropFile','PixelFile','ImageWidth','ImageHeight','AnnotatedImage','DetectorDescription','BoxColorMode','BoxColorR','BoxColorG','BoxColorB'});
         end
+
         perFrameCsv = fullfile(outputDir, uniqueBaseName + "_reviewed.csv");
         writetable(T, perFrameCsv);
     end
@@ -756,6 +798,54 @@ loadFrame(currentIndex);
         else
             labelText = string(box.Label) + " [" + cid + "] " + confText;
         end
+    end
+
+
+    function c = getBoxColor(box)
+        mode = lower(string(boxColorMode));
+        switch mode
+            case "label"
+                key = char(string(box.Label));
+                if isKey(labelColorMap, key)
+                    c = labelColorMap(key);
+                else
+                    c = defaultBoxColor;
+                end
+            case "source"
+                key = char(string(box.Source));
+                if isKey(sourceColorMap, key)
+                    c = sourceColorMap(key);
+                else
+                    c = defaultBoxColor;
+                end
+            case "contactid"
+                cid = strip(string(box.ContactID));
+                if cid == ""
+                    c = defaultBoxColor;
+                else
+                    c = deterministicColorFromString(cid, contactIDColorSeed);
+                end
+            case "single"
+                c = defaultBoxColor;
+            otherwise
+                c = defaultBoxColor;
+        end
+        c = uint8(c);
+    end
+
+    function c = deterministicColorFromString(strValue, seed)
+        s = char(string(strValue));
+        if isempty(s)
+            c = defaultBoxColor;
+            return;
+        end
+        hashValue = seed;
+        for kk = 1:numel(s)
+            hashValue = mod(hashValue * 31 + double(s(kk)), 9973);
+        end
+        hue = mod(hashValue, 360) / 360;
+        rgb = hsv2rgb([hue 0.75 1.00]);
+        c = round(rgb * 255);
     end
 
     function sizeCategory = classifyObjectSize(widthPixels, heightPixels)
