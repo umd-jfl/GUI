@@ -1,4 +1,4 @@
-%% generate_mock_unit_data.m
+%% generate_mock_three_excel_inputs.m
 clear; clc;
 
 rootDir = fullfile(pwd, "MockUnitData");
@@ -9,17 +9,16 @@ end
 
 rng(1);
 
-units = ["Unit01", "Unit02", "Unit03","Unit04"];
+units = ["Unit01", "Unit02", "Unit03"];
 pols = ["Hpol", "Vpol"];
 
 freq_2_6  = 2:0.1:6;
 freq_6_18 = 6:0.1:18;
+freqFull  = (2:0.1:18)';
 
-angles = (-179:1:180)';
+angles = (-180:1:180)';
 
-%% Mast/spec full frequency grid
-freqFull = (2:0.1:18)';
-
+%% Create mast/spec Excel
 mastMedian = 10 + 1.5*sin(freqFull/2);
 mastPeak   = 13 + 1.5*sin(freqFull/2);
 
@@ -31,7 +30,32 @@ specTbl = table(freqFull, mastMedian, mastPeak, specMedian, specPeak, ...
 
 writetable(specTbl, fullfile(rootDir, "mast_and_spec.xlsx"));
 
-%% Generate unit measurement files
+%% Create weighting/reasoning Excel
+weightTbl = table();
+weightTbl.FrequencyGHz = freqFull;
+weightTbl.Performance = nan(size(freqFull));
+
+weightTbl.W_Pos_lt_1   = 1.0 * ones(size(freqFull));
+weightTbl.W_Pos_1_to_3 = 0.7 * ones(size(freqFull));
+weightTbl.W_Pos_gt_3   = 0.4 * ones(size(freqFull));
+
+weightTbl.W_Neg_lt_1   = 2.0 * ones(size(freqFull));
+weightTbl.W_Neg_1_to_3 = 4.0 * ones(size(freqFull));
+weightTbl.W_Neg_gt_3   = 8.0 * ones(size(freqFull));
+
+weightTbl.WeightedFOM = nan(size(freqFull));
+
+weightTbl.Reason_Pos_lt_1   = repmat("Small positive margin; unit is slightly better than specification.", size(freqFull));
+weightTbl.Reason_Pos_1_to_3 = repmat("Moderate positive margin; unit has comfortable margin.", size(freqFull));
+weightTbl.Reason_Pos_gt_3   = repmat("Large positive margin; unit strongly exceeds requirement.", size(freqFull));
+
+weightTbl.Reason_Neg_lt_1   = repmat("Small negative miss; unit is slightly below specification.", size(freqFull));
+weightTbl.Reason_Neg_1_to_3 = repmat("Moderate negative miss; unit is meaningfully below specification.", size(freqFull));
+weightTbl.Reason_Neg_gt_3   = repmat("Large negative miss; unit has severe performance shortfall.", size(freqFull));
+
+writetable(weightTbl, fullfile(rootDir, "weighting_reasoning.xlsx"));
+
+%% Create unit measurement files
 for u = 1:numel(units)
 
     unitName = units(u);
@@ -65,10 +89,10 @@ for u = 1:numel(units)
     end
 end
 
-disp("Mock data generated at:");
+disp("Mock three-input dataset generated at:");
 disp(rootDir);
 
-%% Helper: create mock measurement pattern
+%% ========================================================================
 function data = makeMockPattern(angles, freqGHz, unitOffset, polOffset)
 
     nAngles = numel(angles);
@@ -80,16 +104,33 @@ function data = makeMockPattern(angles, freqGHz, unitOffset, polOffset)
 
         f = freqGHz(k);
 
-        angleShape = 2.5*cosd(angles).^2;
-        freqShape = 0.8*sin(f/2);
-        noise = 0.4 * randn(nAngles, 1);
+        %% Angular pattern
+        angleShape = 1.2*cosd(angles).^2;
 
-        data(:,k) = 5.5 + unitOffset + polOffset + freqShape + angleShape + noise;
+        %% Baseline response
+        baseline = 8.5 + unitOffset + polOffset;
+
+        %% Slow frequency variation
+        freqRipple = 0.8*sin(0.9*f) + 0.35*cos(1.8*f);
+
+        %% Deep resonant nulls / depths
+        dip1 = -12.0 * exp(-((f - 4.0).^2)  / 0.08);
+        dip2 = -8.0  * exp(-((f - 5.6).^2)  / 0.12);
+        dip3 = -24.0 * exp(-((f - 6.9).^2)  / 0.06);
+        dip4 = -10.0 * exp(-((f - 8.8).^2)  / 0.05);
+        dip5 = -14.0 * exp(-((f - 9.8).^2)  / 0.04);
+
+        %% Extra clear dips near your desired examples
+        dip6 = -9.0  * exp(-((f - 11.0).^2) / 0.18);
+        dip7 = -7.5  * exp(-((f - 15.0).^2) / 0.16);
+
+        noise = 0.18 * randn(nAngles, 1);
+
+        data(:,k) = baseline + angleShape + freqRipple + ...
+                    dip1 + dip2 + dip3 + dip4 + dip5 + dip6 + dip7 + noise;
 
     end
 end
-
-%% Helper: save with frequency row and angle column
 function saveMeasurementExcel(filename, angles, freqGHz, data)
 
     out = cell(length(angles)+1, length(freqGHz)+1);
